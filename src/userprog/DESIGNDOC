@@ -1,0 +1,203 @@
+		     +--------------------------+
+       	       	     |		CS 140		|
+		     | PROJECT 2: USER PROGRAMS	|
+		     | 	   DESIGN DOCUMENT     	|
+		     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Jonathan Luu <luuj@usc.edu>
+
+			   ARGUMENT PASSING
+			   ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Inside Thread.h:
+
+    struct semaphore thread_sem;
+    struct thread* parent;
+    struct semaphore failed_load;
+    int failed, child_exit_status;
+
+Thread_sem and failed_load used for waiting
+Parent used for child thread to resume that thread by calling sema_up
+Failed and child_exit_status to determine if exec has failed
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+First parsed the exec name in process_execute and then passed it through as parameters to start_process, load, and setup_stack.
+Setup_stack is where argument parsing is implemented.
+I first iterate through the full string name to get the total number of arguments. I then place the arguments onto the stack backwards by decrementing the esp and using memcpy.
+I then word align the last word and add the final term, which is 4 zeroes. I then write the addresses of the arguments, write the address of argv, argc, and then write 0 for the return address.
+Argv is in the right order because the stack goes backwards and I write the arguments themselves and their addresses backwards. 
+I avoid overflow by letting page_fault handle the exception, and then exiting with a -1 exit code to indicate this.
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+Threads are switched out all the time so we need a way to re-enter where we left off, so strtok_r() makes more sense in this manner.
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+One benefit would be that it could determine whether or not the file already exists before sending it to the kernel. Another benefit would be that it reduces the time in the kernel.
+
+
+			     SYSTEM CALLS
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Inside Syscall.c:
+
+	struct file_descriptor{
+		struct list_elem file_elem;
+		int num;
+		struct file* open_file;
+		int size;
+		int thread_opener;
+	};
+
+	struct exec_descriptor{
+		struct list_elem exec_elem;
+		char* file_name;
+		int id;
+	};
+
+file_descriptor: Used as the list element type to be stored in a static list of file descripters for opening/closing/reading files
+exec_descriptor: Used as the list element type to be stored in a static list of executable programs to disable writing
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+Whenever the SYS_OPEN syscall is made, a new file descriptor is generated and stored in the file_descriptor_list which is checked whenever fd is passed in as an argument and we
+need the actual file to read/open/close etc. The find_fd function inside syscall.c iterates through the file_descriptor_list and returns the file_descriptor if the fd's match up,
+and the file_descriptor contains all the necessary information to determine which thread has the right to modify that file.
+File descriptors are unique throughout the entire OS in this case, as I do not reset the number for each individual process.
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+When a read or write request is made, the file is first opened, which creates a unique file descriptor which is added to file_descriptor_list.
+I also make the necessary checks of valid pointers and valid file names before continuing. If opening the file succeeds, I check to see if it is an executable file,
+which I placed in the load function in process.c to make sure that processes do not edit these files. I then create a file_descriptor struct, storing the fd of the opened file that 
+was generated, the file itself, the size of the file, and the process id of the process that opened that file. I then push this file_descriptor on the file_descriptor list.
+
+When read is called, I first determine if it is STDOUT_FILENO. IF so, immediately return -1 as that is an invalid fd. I then use the find_fd function I created to locate 
+the fd that was passed into read as a parameter. If the fd is found in the file_descriptor_list, I use file_read in filesys/file.h to read the file and return its value, or the size read.
+
+When write is called, I first check if it is STDOUT_FILENO. If so, I use the putbuf function and return 0. IF not, I use find_fd to locate the fd passed in and use the file_write function
+in filesys/file.h to write it and return its value, or the bytes written.
+
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+THe least number would be one as we get the entire page at once. THE greatest would be 4096 because if it is not contiguous in memory, we would have to get each separate byte of data.
+For a call that only copies 2 bytes of data, the least would be 1 and the greatest would be 2. Same reasoning as the full-page of data. I am not certain if there is room for improvement
+because if the data is separated in such large chunks, it would be difficult to determine how to retrieve it without making that many calls.
+
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+WHen wait is called, I first call process_wait in process.c. This uses a function I created in thread.c, find_thread_tid, which takes in a child_tid and returns the thread
+with that id if it exists. If that thread does not exist, I immediately return -1. If it does, I set that thread's parent value to the current thread, and then sema_down the parent thread.
+WHen the child thread exists using thread_exit, I sema_up using the parent_thread variable that was stored, allowing that thread to continue. I also have a saved_status variable to
+store the exit status if the exit syscode is called. 
+
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+I created a is_ptr_valid function in syscall.c that determines whether or not the passed in ptr is a valid ptr. It checks if the pointer is within a valid range, 
+or between 0x804800 and PHYS_BASE. IF it is not within a valid range or if the pointer itself is NULL, then I exit(-1); I then use is_user_vaddr(ptr) to determine if it is a valid pointer. If
+not, then I exit(-1). Lastly, I use pagedir_get_page(thread_current()->pagedir, ptr) to see if it was mapped. If not, then exit(-1).
+
+First, I call is_ptr_valid on (f->esp) to make sure that it is a valid stack pointer. Then, for each SYSCALL case, I call is_ptr_valid on each of the parameters passed in. Since
+the number of arguments vary for each SYSCALL, I only called is_ptr_valid on the number of arguments that I expected. For example, I did:
+	is_ptr_valid((int*)f->esp + 1);
+	is_ptr_valid((int*)f->esp + 2);
+	is_ptr_valid((int*)f->esp + 3);
+for SYS_WRITE, as I expected three values. For SYS_OPEN, I only did is_ptr_valid((int*)f->esp + 1) because it only expects one argument.
+If the argument was stored in a void*, I then had to check again if that pointer itself was valid. 
+
+For example, in SYS_WRITE, I dereference is_ptr_valid((int*)f->esp + 2) into a void* buffer variable. Because I will be using this buffer to write, I have to check to see if
+it is a valid pointer and if it is already mapped, so I have to call is_ptr_valid(buffer). 
+
+As I check that these pointers are all valid before actually performing the SYSCALL function, allocated resources are not actually allocated in the first place before exit(-1) is called.
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+In my exec function, I call process_execute which eventually loads the given cmd_line argument. 
+I created a failed variable in thread.h and a new semaphore, failed_load, to pass a code if the load failed. This is all done in process.c. 
+
+If load fails, it returns success as false.
+This is caught in start_process. If success is false, I store a failure code in the parent's failed variable. When the child thread finishes and the parent continues running, it will 
+see that the failure code is true and set the id as one. IF it does not fail, process_execute will return the id of the successfully run process instead. 
+However, I had to guarantee that the parent thread did not run again before load was finished, so I created the failed_load semaphore in thread.h. I also created a new function,
+process_load_wait, which sema_downs the failed load semaphore. IN start_process, after load finishes, it sema_ups the failed_load semaphore whether it fails or not, allowing the
+parent process to continue.
+
+All of this is to ensure that load finishes, and if loading fails, return -1 as the id.
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+Each parent should have a list of children and their current status. 
+If P calls wait before C exits, it will behave normally and check its list of children to see if C still exists. Once C finishes, it will then resume its function.
+IF P calls wait after C exits, it will see that C is no longer in its children list and not wait.
+If P terminates without waiting before C exits, then its list of children will be gone. C will see that its parent is no longer running and continue executing and eventually terminate.
+IF P terminates without waiting after C exits, then it will behave just like scenario 2 but without the check.
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+By having a function that checked pointer validity and checking all pointers before allocating memory, it was easier to handle memory de-allocation as well as improved readability
+of the code. I could have also moved all the pointer checking into each individual syscall function (i.e write(), read()) but I felt checking within the switch statement was better.
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+An advantage would be since it is located inside syscall.c, I can easily access it and determine whether or not a fd exists or not. A disadvantage of having a global fd list
+is that each process will not overlap and this can cause wasted fd's because process fd's are not reset. 
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+N/A
+
